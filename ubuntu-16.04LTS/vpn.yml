@@ -1,0 +1,174 @@
+# Ansible playbook for VPN server setup
+---
+- hosts: vpn_hosts
+
+  tasks:
+
+##### System-wide preparations
+
+  - name: Install apt-get packages
+    become: yes
+    apt: "pkg={{ item }} state=installed"
+    with_items: ['strongswan', 'strongswan-plugin-eap-mschapv2', 'moreutils', 'iptables-persistent', 'haveged']
+
+  - name: Copy vim config
+    copy:
+      src: templates/.vimrc
+      dest: "/home/{{ lookup('env', 'USER') }}"
+      owner: "{{ lookup('env', 'USER') }}"
+      group: "{{ lookup('env', 'USER') }}"
+      mode: 0644
+
+  - name: Start haveged on boot
+    become: yes
+    systemd:
+      name: haveged
+      enabled: yes
+      state: started
+
+  - name: Creates IPsec directories
+    become: yes
+    file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+    with_items: ['/etc/ipsec.d/certs', '/etc/ipsec.d/private', '/etc/ipsec.d/vpn-certs'] 
+
+  - name: Generate server root key
+    become: yes
+    command: /bin/sh -c 'ipsec pki --gen --type rsa --size 4096 --outform pem > /etc/ipsec.d/vpn-certs/server-root-key.pem'
+    args:
+      creates: /etc/ipsec.d/vpn-certs/server-root-key.pem
+
+  - name: Changing permissions of server-root-key.pem
+    become: yes
+    file: dest=/etc/ipsec.d/vpn-certs/server-root-key.pem mode=600
+
+  - name: Generate server root CA
+    become: yes
+    command: /bin/sh -c 'ipsec pki --self --ca --lifetime 3650 --in /etc/ipsec.d/vpn-certs/server-root-key.pem --type rsa --dn "C=US, O=VPN Server, CN={{ inventory_hostname }}" --outform pem > /etc/ipsec.d/vpn-certs/server-root-ca.pem'
+    args:
+      creates: /etc/ipsec.d/vpn-certs/server-root-ca.pem
+
+  - name: Generate server private key
+    become: yes
+    command: /bin/sh -c 'ipsec pki --gen --type rsa --size 4096 --outform pem > /etc/ipsec.d/private/vpn-server-key.pem'
+    args:
+      creates: /etc/ipsec.d/private/vpn-server-key.pem
+
+  - name: Changing permissions of vpn-server-key.pem
+    become: yes
+    file: dest=/etc/ipsec.d/private/vpn-server-key.pem mode=600
+
+  - name: Generate VPN server certificate
+    become: yes
+    command: /bin/sh -c 'ipsec pki --pub --in /etc/ipsec.d/private/vpn-server-key.pem --type rsa | ipsec pki --issue --lifetime 1825 --cacert /etc/ipsec.d/vpn-certs/server-root-ca.pem --cakey /etc/ipsec.d/vpn-certs/server-root-key.pem --dn "C=US, O=VPN Server, CN={{ inventory_hostname }}" --san {{ inventory_hostname }} --flag serverAuth --flag ikeIntermediate --outform pem > /etc/ipsec.d/certs/vpn-server-cert.pem'
+    args:
+      creates: /etc/ipsec.d/certs/vpn-server-cert.pem
+
+  - name: Backup IPsec config
+    become: yes
+    command: mv /etc/ipsec.conf /etc/ipsec.conf.original creates=/etc/ipsec.conf.original removes=/etc/ipsec.conf
+
+  - name: Copy IPsec config and secrets
+    become: yes
+    template:
+      src: templates/{{ item }}
+      dest: /etc/{{ item }}
+    with_items: ['ipsec.conf', 'ipsec.secrets']
+
+  - name: Disable ufw
+    become: yes
+    command: ufw disable
+
+  ##### Configure iptables
+
+  # iptables -P INPUT ACCEPT
+  - iptables:
+      chain: INPUT
+      policy: ACCEPT
+    become: yes
+
+  # iptables -P FORWARD ACCEPT
+  - iptables:
+      chain: FORWARD
+      policy: ACCEPT
+    become: yes
+
+  - command: iptables -F
+    become: yes
+
+  - command: iptables -Z
+    become: yes
+
+  # iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+  - iptables:
+      chain: INPUT
+      match: state
+      ctstate: ESTABLISHED,RELATED
+      jump: ACCEPT
+    become: yes
+  
+  # iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+  - iptables:
+      chain: INPUT
+      protocol: tcp
+      destination_port: 22
+      jump: ACCEPT
+    become: yes
+
+  # iptables -A INPUT -i lo -j ACCEPT
+  - iptables:
+      chain: INPUT
+      in_interface: lo
+      jump: ACCEPT
+    become: yes
+
+  # iptables -A INPUT -p udp --dport  500 -j ACCEPT
+  # iptables -A INPUT -p udp --dport 4500 -j ACCEPT
+  - iptables:
+      chain: INPUT
+      protocol: udp
+      destination_port: "{{ item }}"
+      jump: ACCEPT
+    become: yes
+    with_items: [500, 4500]
+
+  # sudo iptables -A FORWARD --match policy --pol ipsec --dir in  --proto esp -s 10.10.10.10/24 -j ACCEPT
+  # sudo iptables -A FORWARD --match policy --pol ipsec --dir out --proto esp -d 10.10.10.10/24 -j ACCEPT
+  # sudo iptables -t nat -A POSTROUTING -s 10.10.10.10/24 -o eth0 -m policy --pol ipsec --dir out -j ACCEPT
+  # sudo iptables -t nat -A POSTROUTING -s 10.10.10.10/24 -o eth0 -j MASQUERADE
+  # sudo iptables -t mangle -A FORWARD --match policy --pol ipsec --dir in -s 10.10.10.10/24 -o eth0 -p tcp -m tcp --tcp-flags SYN,RST SYN -m tcpmss --mss 1361:1536 -j TCPMSS --set-mss 1360
+  - command: "{{ item }}"
+    become: yes
+    with_items:
+      - iptables -A FORWARD --match policy --pol ipsec --dir in  --proto esp -s 10.10.10.10/24 -j ACCEPT
+      - iptables -A FORWARD --match policy --pol ipsec --dir out --proto esp -d 10.10.10.10/24 -j ACCEPT
+      - iptables -t nat -A POSTROUTING -s 10.10.10.10/24 -o eth0 -m policy --pol ipsec --dir out -j ACCEPT
+      - iptables -t nat -A POSTROUTING -s 10.10.10.10/24 -o eth0 -j MASQUERADE
+      - iptables -t mangle -A FORWARD --match policy --pol ipsec --dir in -s 10.10.10.10/24 -o eth0 -p tcp -m tcp --tcp-flags SYN,RST SYN -m tcpmss --mss 1361:1536 -j TCPMSS --set-mss 1360
+
+  - iptables:
+      chain: "{{ item }}"
+      jump: DROP
+    become: yes
+    with_items: ['INPUT', 'FORWARD']
+
+  # sudo netfilter-persistent save
+  # sudo netfilter-persistent reload
+  - command: "{{ item }}"
+    become: yes
+    with_items:
+      - netfilter-persistent save
+      - netfilter-persistent reload
+
+  - name: Update /etc/sysctl.conf
+    become: yes
+    blockinfile:
+      path: /etc/sysctl.conf
+      block: |
+        net.ipv4.ip_forward=1
+        net.ipv4.conf.all.accept_redirects = 0
+        net.ipv4.conf.all.send_redirects = 0
+        net.ipv4.ip_no_pmtu_disc = 1

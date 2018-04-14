@@ -1,0 +1,3 @@
+# List of VPN hosts
+[vpn_hosts]
+52.166.61.57 ansible_ssh_pipelining=True
