@@ -1,23 +1,15 @@
-# Ansible playbook for VPN server setup
+# Ansible playbook for StrongSwan VPN server setup
 ---
 - hosts: vpn_hosts
 
   tasks:
 
-##### System-wide preparations
+  ##### System-wide preparations
 
   - name: Install apt-get packages
     become: yes
     apt: "pkg={{ item }} state=installed"
     with_items: ['strongswan', 'strongswan-plugin-eap-mschapv2', 'moreutils', 'iptables-persistent', 'haveged']
-
-  - name: Copy vim config
-    copy:
-      src: templates/.vimrc
-      dest: "/home/{{ lookup('env', 'USER') }}"
-      owner: "{{ lookup('env', 'USER') }}"
-      group: "{{ lookup('env', 'USER') }}"
-      mode: 0644
 
   - name: Start haveged on boot
     become: yes
@@ -25,6 +17,8 @@
       name: haveged
       enabled: yes
       state: started
+
+  ##### Setup VPN server
 
   - name: Creates IPsec directories
     become: yes

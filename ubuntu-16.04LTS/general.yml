@@ -1,0 +1,13 @@
+# Ansible playbook for general server setup
+---
+- hosts: vpn_hosts
+
+  tasks:
+
+  - name: Copy vim config
+    copy:
+      src: templates/.vimrc
+      dest: "/home/{{ lookup('env', 'USER') }}"
+      owner: "{{ lookup('env', 'USER') }}"
+      group: "{{ lookup('env', 'USER') }}"
+      mode: 0644

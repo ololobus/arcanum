@@ -1,0 +1,53 @@
+# Ansible playbook for SOCKS5 proxy-server setup
+---
+- hosts: vpn_hosts
+
+  tasks:
+
+  - name: Install apt-get packages
+    become: yes
+    apt: "pkg={{ item }} state=installed"
+    with_items: ['dante-server']
+
+  - name: Copy danted config
+    become: yes
+    template:
+      src: templates/{{ item }}
+      dest: /etc/{{ item }}
+    with_items: ['danted.conf']
+
+  - name: Add user for proxy-server
+    become: yes
+    user:
+      name: dante
+      shell: /sbin/nologin
+
+  - name: Start danted on boot
+    become: yes
+    service:
+      name: danted
+      enabled: yes
+      state: started
+
+  - name: Add user for proxy
+    become: yes
+    user:
+      name: gatekeeper
+      password: "{{ lookup('password', '/tmp/passwordfile length=12') }}"
+      shell: /sbin/nologin
+
+  # iptables -A INPUT -p tcp --dport 8080 -j ACCEPT
+  - iptables:
+      chain: INPUT
+      protocol: tcp
+      destination_port: 8080
+      jump: ACCEPT
+    become: yes
+    
+  # iptables -A INPUT -p tcp --dport 1080 -j socks
+  # - iptables:
+  #     chain: INPUT
+  #     protocol: tcp
+  #     destination_port: 8080
+  #     jump: socks
+  #   become: yes
