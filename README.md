@@ -16,9 +16,9 @@ To be able to use `On demand` switcher on iOS client create profile (use Apple C
 <integer>1</integer>
 <key>OnDemandRules</key>
 <array>
-	<dict>
-		<key>Action</key>
-		<string>Connect</string>
-	</dict>
+  <dict>
+    <key>Action</key>
+    <string>Connect</string>
+  </dict>
 </array>
 ```

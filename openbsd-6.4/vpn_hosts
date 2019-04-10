@@ -1,0 +1,6 @@
+# List of VPN hosts
+[vpn_hosts]
+8.8.8.8 ansible_ssh_pipelining=True
+
+[vpn_hosts:vars]
+ansible_python_interpreter=/usr/local/bin/python

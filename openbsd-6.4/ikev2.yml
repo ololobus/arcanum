@@ -1,0 +1,96 @@
+# Ansible playbook for OpenBSD host setup
+---
+- hosts: vpn_hosts
+
+  remote_user: root
+
+  tasks:
+
+  ##### System-wide preparations
+
+  - name: Ensure sysctl params are set
+    sysctl:
+      name: net.inet.{{item}}
+      value: 1
+    with_items:
+      - ip.forwarding
+      - esp.enable
+      - ah.enable
+      - ipcomp.enable
+
+  - name: Ensure the enc0 interface is configured
+    copy:
+      dest: /etc/hostname.enc0
+      owner: root
+      group: wheel
+      mode: 0640
+      content: |
+        inet 10.0.1.1 255.255.255.0 10.0.1.255
+        up
+
+  ##### Firewall configuration
+
+  - name: Ensure /etc/badguys exists
+    copy:
+      dest: /etc/badguys
+      owner: root
+      group: wheel
+      mode: 0640
+      force: false
+      content: ""
+
+  - name: Ensure pf is configured
+    copy:
+      dest: /etc/pf.conf
+      owner: root
+      group: wheel
+      mode: 0644
+      content: |
+        intra = "vio0"
+        vpn = "enc0"
+        set reassemble yes
+        set block-policy return
+        set loginterface egress
+        set skip on { lo, enc }
+        match in all scrub (no-df random-id max-mss 1440)
+        table <ossec_fwtable> persist
+        table <badguys> persist file "/etc/badguys"
+        block in quick  on egress from <badguys> label "bad"
+        block out quick on egress to <badguys> label "bad"
+        block in quick  on egress from <ossec_fwtable> label "bad"
+        block out quick on egress to <ossec_fwtable> label "bad"
+        block in quick from urpf-failed label uRPF
+        block return log
+        pass out all modulate state
+        pass in on egress proto { ah, esp }
+        pass in on egress proto udp to (egress) port { isakmp, ipsec-nat-t }
+        pass out on egress from 10.0.1.0/24 to any nat-to (egress)
+        pass out on $intra from 10.0.1.0/24 to $intra:network nat-to ($intra)
+        pass in quick inet proto icmp icmp-type { echoreq, unreach }
+        pass in on egress proto tcp from any to (egress) port 22 keep state (max-src-conn 40, max-src-conn-rate 10/30, overload <badguys> flush global)
+        pass in on $intra proto { udp tcp } from any to ($intra) port 53
+
+  ##### IKEv2 configuration
+
+  - name: Ensure iked is configured
+    copy:
+      dest: /etc/iked.conf
+      owner: root
+      group: wheel
+      mode: 0600
+      content: |
+        ikev2 "inet" passive ipcomp esp \
+        from 0.0.0.0/0 to 10.0.1.0/24 \
+        from 10.0.0.0/24 to 10.0.1.0/24 \
+        local egress peer any \
+        psk "IKEv2_p$k#42!" \
+        config protected-subnet 0.0.0.0/0 \
+        config address 10.0.1.0/24 \
+        config name-server 8.8.8.8 \
+        tag "IKED" tap enc0
+
+  - name:  Ensure iked service is running/enabled
+    service:
+      name: iked
+      state: started
+      enabled: true
